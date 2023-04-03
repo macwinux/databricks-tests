@@ -1,0 +1,23 @@
+{
+    "clusters": [
+        {
+            "label": "default",
+            "num_workers": 1
+        }
+    ],
+    "development": true,
+    "continuous": false,
+    "channel": "CURRENT",
+    "edition": "ADVANCED",
+    "photon": false,
+    "libraries": [
+        {
+            "notebook": {
+                "path": "/Repos/Production/databricks-tests/pipelines/production-dlt"
+            }
+        }
+    ],
+    "name": "dlt_production",
+    "storage": "dbfs:/pipelines/ab76c3c6-d98b-4511-a705-3cfc4c06225e",
+    "target": "production_data"
+}

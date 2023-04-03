@@ -1,0 +1,300 @@
+# Grab variables from the specific variable group and
+# determine sourceBranchName (avoids SourchBranchName=merge
+# for PR)
+variables:
+  - group: 'dlt-testing-local'
+  - name: 'branchName'
+    ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/') }}:
+      value: $[ replace(variables['Build.SourceBranch'], 'refs/heads/', '') ]
+    ${{ if startsWith(variables['Build.SourceBranch'], 'refs/pull/') }}:
+      value: $[ replace(variables['System.PullRequest.SourceBranch'], 'refs/heads/', '') ]
+
+trigger:
+  - feature/*
+  - hotfix/*
+  - release/*
+
+#  tags:
+#    include:
+#      - v*.*
+#      - prod
+
+# This need an additional debugging
+# pr:
+#   branches:
+#     include:
+#       - master
+#       - releases
+#   paths:
+#     exclude:
+#       - README.md
+#       - images
+
+
+stages:
+- stage: onPush
+  condition: |
+    and(
+      not(startsWith(variables['Build.SourceBranch'], 'refs/heads/release')),
+      not(startsWith(variables['Build.SourceBranch'], 'refs/heads/master')),
+      ne(variables['Build.Reason'], 'PullRequest'),
+      not(startsWith(variables['Build.SourceBranch'], 'refs/tags/v'))
+    )
+  jobs:
+  - job: onPushJob
+    pool:
+      vmImage: 'ubuntu-20.04'
+
+    steps:
+    - task: UsePythonVersion@0
+      displayName: 'Use Python 3.8'
+      inputs:
+        versionSpec: 3.8
+
+    - checkout: self
+      displayName: 'Checkout & Build.Reason: $(Build.Reason) & Build.SourceBranchName: $(Build.SourceBranchName)'
+
+    - script: |
+        curl -sSL https://install.python-poetry.org | python -
+        export PATH=$PATH:$HOME/.poetry/bin
+        poetry install --no-root
+      displayName: 'Install dependencies'
+    - script: echo "##vso[task.prependpath]$HOME/.poetry/bin"
+      displayName: Add poetry to PATH
+    
+    - script: |
+        poetry run pytest tests/unit_test_columns_helpers.py --junit-xml=test-local.xml --cov
+      displayName: 'Execute local tests'
+      
+    - task: PublishTestResults@2
+      condition: succeededOrFailed()
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/test-*.xml' 
+        failTaskOnFailedTests: true
+
+
+- stage: onPullRequest
+  condition: |
+    eq(variables['Build.Reason'], 'PullRequest')
+#    and(
+#      ne(variables['Build.SourceBranch'], 'refs/heads/release'),
+#      not(startsWith(variables['Build.SourceBranch'], 'refs/tags/v'))
+#    )
+  jobs:
+  - job: onPullRequestJob
+    pool:
+      vmImage: 'ubuntu-20.04'
+
+    steps:
+    - script: env | sort
+      displayName: 'Environment / Context'
+
+    - task: UsePythonVersion@0
+      displayName: 'Use Python 3.8'
+      inputs:
+        versionSpec: 3.8
+
+    - checkout: self
+      displayName: 'Checkout & Build.Reason: $(Build.Reason) & Build.SourceBranchName: $(Build.SourceBranchName)'
+
+    - script: |
+        curl -sSL https://install.python-poetry.org | python -
+        export PATH=$PATH:$HOME/.poetry/bin
+        poetry install --no-root
+      displayName: 'Install dependencies'
+
+    - script: echo "##vso[task.prependpath]$HOME/.poetry/bin"
+      displayName: Add poetry to PATH
+        
+    - script: |
+        echo "Checking out the $(branchName) branch"
+        poetry run databricks repos update --path $(STAGING_DIRECTORY) --branch "$(branchName)"
+      env:
+        DATABRICKS_HOST: $(DATABRICKS_HOST)
+        DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
+      displayName: 'Update Staging project'
+    - script: |
+        poetry run pytest tests/unit_test_columns_helpers.py --junit-xml=test-local.xml --cov
+      displayName: 'Execute local tests'
+
+    - script: |
+        poetry run nutter run "$(STAGING_DIRECTORY)/tests/notebook/test_columns_helpers" --cluster_id $(CLUSTER_ID) --junit_report --timeout 500
+      env:
+        DATABRICKS_HOST: $(DATABRICKS_HOST)
+        DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
+      displayName: 'Execute Nutter Unit tests'
+
+    - script: |
+        echo "Terminate Staging Cluster"
+        poetry run databricks clusters delete --cluster-id $(CLUSTER_ID)
+      env:
+        DATABRICKS_HOST: $(DATABRICKS_HOST)
+        DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
+      displayName: 'Terminate Staging Cluster'      
+    - task: PublishTestResults@2
+      condition: succeededOrFailed()
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/test-*.xml' 
+        failTaskOnFailedTests: true
+
+
+- stage: onRelease
+  condition: |
+    and(ne(variables['Build.Reason'], 'PullRequest'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release'))
+  jobs:
+  - job: onReleaseJob
+    pool:
+      vmImage: 'ubuntu-20.04'
+
+    steps:
+    - task: UsePythonVersion@0
+      displayName: 'Use Python 3.8'
+      inputs:
+        versionSpec: 3.8
+
+    - checkout: self
+      displayName: 'Checkout & Build.Reason: $(Build.Reason) & Build.SourceBranchName: $(Build.SourceBranchName)'
+
+    - script: |
+        curl -sSL https://install.python-poetry.org | python -
+        export PATH=$PATH:$HOME/.poetry/bin
+        poetry install --no-root
+      displayName: 'Install dependencies'
+    - script: echo "##vso[task.prependpath]$HOME/.poetry/bin"
+      displayName: Add poetry to PATH
+    
+    - script: |
+        echo "Checking out the $(branchName) branch"
+        poetry run databricks repos update --path $(STAGING_DIRECTORY) --branch "$(branchName)"
+      env:
+        DATABRICKS_HOST: $(DATABRICKS_HOST)
+        DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
+      displayName: 'Update Staging project'
+    - script: |
+        poetry run pytest tests/unit_test_columns_helpers.py --junit-xml=test-local.xml --cov
+      displayName: 'Execute local tests'
+      
+    - script: |
+        poetry run nutter run "$(STAGING_DIRECTORY)/tests/notebooktest_columns_helpers" --cluster_id $(CLUSTER_ID) --recursive --junit_report --timeout 500
+      env:
+        DATABRICKS_HOST: $(DATABRICKS_HOST)
+        DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
+      displayName: 'Execute Nutter Unit tests'
+
+    - script: |
+        poetry run nutter run "$(STAGING_DIRECTORY)/tests/notebook/test_production_pipeline" --cluster_id $(CLUSTER_ID) --junit_report --timeout 600
+      env:
+        DATABRICKS_HOST: $(DATABRICKS_HOST)
+        DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
+      displayName: 'Execute Nutter Integration Notebooks tests'
+
+    - script: |
+        echo "Terminate Staging Cluster"
+        poetry run databricks clusters delete --cluster-id $(CLUSTER_ID)
+      env:
+        DATABRICKS_HOST: $(DATABRICKS_HOST)
+        DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
+      displayName: 'Terminate Staging Cluster'
+
+    - script: |
+        echo "Create or update pipeline"
+        DLT_ID=$(poetry run databricks pipelines list | jq -c '.[] | select(.name | contains("dlt_test")) | .pipeline_id' | sed 's/"//g') 
+        if [ -z "$DLT_ID" ]; then
+          poetry run databricks pipelines create --settings ./delta_pipelines/test-pipeline.json
+          DLT_ID=$(poetry run databricks pipelines list | jq -c '.[] | select(.name | contains("dlt_test")) | .pipeline_id' | sed 's/"//g') 
+        else
+          DLT_FILE=$(jq --arg ID $DLT_ID '. + { "id": $ID }' ./delta_pipelines/test-pipeline.json)
+          echo "${DLT_FILE}" > ./delta_pipelines/edit-test-pipeline.json
+          poetry run databricks pipelines edit --settings ./delta_pipelines/edit-test-pipeline.json
+        fi  
+        DLT_START=$SECONDS
+        DLT_START_ISO=$(date --iso-8601=seconds)
+        poetry run databricks pipelines start --pipeline-id $DLT_ID --full-refresh
+        sleep 15
+        while true; do
+          DLT_STATUS=$(poetry run databricks pipelines get --pipeline-id $DLT_ID |jq -r '.latest_updates[0].state')
+          if [ "$DLT_STATUS" = "COMPLETED" -o "$DLT_STATUS" = "CANCELED" -o "$DLT_STATUS" = "FAILED" ]; then
+            echo "Exiting loop with status '$DLT_STATUS'"
+            break
+          fi
+          echo "DLT pipeline status is '$DLT_STATUS'. Waiting..."
+          sleep 45
+        done
+        DLT_FINISH=$SECONDS
+        DLT_ERRORS=$(( "$DLT_STATUS" = "FAILED" ? 1 : 0 ))
+        DLT_SKIPPED=$(( "$DLT_STATUS" = "CANCELED" ? 1 : 0 ))
+        echo "<?xml version=\"1.0\" encoding=\"UTF-8\"?><testsuites><testsuite name=\"DLT Integration test\" tests=\"1\" skipped=\"$DLT_SKIPPED\" errors=\"$DLT_ERRORS\" failures=\"$DLT_ERRORS\" time=\"$((DLT_FINISH-DLT_START))\" timestamp=\"${DLT_START_ISO}\">" > test-dlt.xml
+        echo "<testcase classname=\"DLTIntegration\" name=\"${DLT_ID}\" time=\"$((DLT_FINISH-DLT_START))\">" >> test-dlt.xml
+        if [ "$DLT_STATUS" = "FAILED" ]; then
+          DLT_UPDATE_ID=$(poetry run databricks pipelines get --pipeline-id $DLT_ID |jq -r '.latest_updates[0].update_id')
+          echo "<failure message=\"DLT test failure\">Pipeline update with ID ${DLT_UPDATE_ID} has failed</failure>" >> test-dlt.xml
+        elif [ "$DLT_STATUS" = "CANCELED" ]; then
+          echo '<skipped />' >> test-dlt.xml
+        fi
+        echo '</testcase></testsuite></testsuites>' >> test-dlt.xml
+        if [ "$DLT_STATUS" != "COMPLETED" ]; then
+          exit 1
+        fi
+      env:
+        DATABRICKS_HOST: $(DATABRICKS_HOST)
+        DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
+      displayName: 'Update and Execute DLT Integration Test pipeline'
+      
+    - task: PublishTestResults@2
+      condition: succeededOrFailed()
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/test-*.xml' 
+        failTaskOnFailedTests: true
+
+
+- stage: ProdDeployment
+  dependsOn: onRelease
+  condition: and(eq(dependencies.onRelease.result, 'Succeeded'), ne(variables['Build.Reason'], 'PullRequest'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release'))
+  jobs:
+    - job: Deployment
+      pool:
+        vmImage: 'ubuntu-20.04'
+
+      steps:
+        - script: env | sort
+          displayName: 'Environment / Context'
+
+        - task: UsePythonVersion@0
+          displayName: 'Use Python 3.8'
+          inputs:
+            versionSpec: 3.8
+
+        - checkout: self
+          persistCredentials: true
+          clean: true
+          displayName: 'Checkout & Build.Reason: $(Build.Reason) & Build.SourceBranchName: $(Build.SourceBranchName)'
+
+        - script: |
+            python -m pip install --upgrade databricks-cli
+          displayName: 'Install dependencies'
+
+        - script: |
+            echo "Checking out the releases branch"
+            databricks repos update --path $(PRODUCTION_DIRECTORY) --branch "$(branchName)"
+          env:
+            DATABRICKS_HOST: $(DATABRICKS_HOST)
+            DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
+          displayName: 'Update Production repository'   
+
+        - script: |
+            echo "Create or update pipeline"
+            DLT_ID=$(databricks pipelines list | jq -c '.[] | select(.name | contains("dlt_production")) | .pipeline_id' | sed 's/"//g') 
+            if [ -z "$DLT_ID" ]; then
+              databricks pipelines create --settings ./delta_pipelines/pipeline.json
+            else
+              DLT_FILE=$(jq --arg ID $DLT_ID '. + { "id": $ID }' ./delta_pipelines/pipeline.json)
+              echo "${DLT_FILE}" > ./delta_pipelines/edit-pipeline.json
+              databricks pipelines edit --settings ./delta_pipelines/edit-pipeline.json
+            fi  
+          env:
+            DATABRICKS_HOST: $(DATABRICKS_HOST)
+            DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
+          displayName: 'Create or Update production pipelines'

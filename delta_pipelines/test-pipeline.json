@@ -1,0 +1,28 @@
+{
+    "clusters": [
+        {
+            "label": "default",
+            "num_workers": 1
+        }
+    ],
+    "development": true,
+    "continuous": false,
+    "channel": "CURRENT",
+    "edition": "ADVANCED",
+    "photon": false,
+    "libraries": [
+        {
+            "notebook": {
+                "path": "/Repos/Staging/databricks-tests/pipelines/production-dlt"
+            }
+        },
+        {
+            "notebook": {
+                "path": "/Repos/Staging/databricks-tests/tests/integration_test"
+            }
+        }
+    ],
+    "name": "dlt_test",
+    "storage": "dbfs:/pipelines/ab76c3c6-d98b-4511-a705-3cfc4c06225e",
+    "target": "test_data"
+}
